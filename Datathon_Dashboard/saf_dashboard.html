@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="datathon_icon.png">
+
+  <title>IE-IATA Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Aileron:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    body {
+      font-family: 'Aileron', sans-serif;
+      margin: 0;
+      padding: 0 1.5rem 2rem;
+      background: #f7f6f4;
+    }
+
+    h1 {
+      text-align: center;
+      margin-top: 1.5rem;
+      color: #1351aa;
+      font-weight: 900;
+    }
+
+    h2 {
+      color: #1351aa;
+      margin-top: 2rem;
+    }
+
+    p {
+      color: #2c2c2c;
+      text-align: center;
+      max-width: 900px;
+      margin: 0.5rem auto;
+    }
+
+    .upload-box {
+      background: white;
+      padding: 1.5rem;
+      border-radius: 0.75rem;
+      border-left: 6px solid #1351aa;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      margin: 1.5rem auto;
+      max-width: 800px;
+    }
+
+    .upload-box h2 {
+      margin-top: 0;
+    }
+
+    .upload-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .upload-item {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+    }
+
+    .upload-item label {
+      font-weight: 600;
+      color: #1351aa;
+      margin-bottom: 0.3rem;
+    }
+
+    .note {
+      font-size: 0.8rem;
+      color: #555;
+      margin-top: 0.25rem;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+      background: white;
+      padding: 1rem;
+      border-radius: 0.75rem;
+      border-left: 6px solid #1351aa;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    }
+
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.9rem;
+    }
+
+    .control-group label {
+      color: #1351aa;
+      margin-bottom: 0.25rem;
+      font-weight: 600;
+    }
+
+    .control-group select {
+      padding: 0.4rem;
+      border-radius: 6px;
+      border: 1px solid #1351aa;
+      background: #fff;
+    }
+
+    .charts {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+
+    @media (min-width: 1000px) {
+      .charts {
+        grid-template-columns: 1fr 1fr;
+      }
+      #co2-chart {
+        grid-column: 1 / -1;
+      }
+    }
+
+    .section {
+      margin-top: 2rem;
+    }
+
+  </style>
+</head>
+
+<body>
+  <h1>IE–IATA Datathon 2025</h1>
+  <p>
+    SAF Uptake and Decarbonization Pathways Dashboard for EU27 Aviation.
+  </p>
+
+  <div class="controls">
+    <h2>Official EU27 scenarios</h2>
+    <div class="control-group">
+      <label for="scenarioSelect">Scenario</label>
+      <select id="scenarioSelect">
+        <option value="S0">Scenario 0 – Business-as-Usual (market-driven SAF)</option>
+        <option value="S1">Scenario 1 – ReFuelEU / High Ambition</option>
+      </select>
+      <span class="note">
+        Baseline: 2022 = 38 Mt fuel, growth = 1.5%/year, EF = 3.16 tCO₂/t, SAF reduction = 70%.
+      </span>
+    </div>
+  </div>
+
+  <div class="charts">
+    <div id="fuel-chart"></div>
+    <div id="saf-share-chart"></div>
+    <div id="co2-chart"></div>
+  </div>
+
+  <div class="upload-box">
+    <h2>Upload CSV</h2>
+    <div class="upload-row">
+      <div class="upload-item">
+        <label for="g2gFile">g2g_emissions CSV</label>
+        <input id="g2gFile" type="file" accept=".csv">
+      </div>
+    </div>
+  </div>
+  
+  <div class="section">
+    <h2>Gate to Gate Emissions</h2>
+    <div id="g2g-co2-total-chart"></div>
+    <div id="g2g-flights-chart" style="margin-top:1.5rem;"></div>
+    <div id="g2g-co2-per-flight-chart" style="margin-top:1.5rem;"></div>
+
+    <div id="g2g-co2-vs-flights" style="margin-top:1.5rem;"></div>
+    <div id="g2g-co2perflight-ranking" style="margin-top:1.5rem;"></div>
+  </div>
+
+  <script>
+    function projectFuel(baselineYear, baselineFuel, years, growth) {
+      return years.map(y => baselineFuel * Math.pow(1 + growth, y - baselineYear));
+    }
+
+    function interpolateSafShare(years, anchors) {
+      const xs = Object.keys(anchors).map(Number).sort((a,b)=>a-b);
+      const ys = xs.map(x => anchors[x]);
+
+      function interp(x) {
+        if (x <= xs[0]) return ys[0];
+        if (x >= xs[xs.length-1]) return ys[xs.length-1];
+        for (let i=0; i<xs.length-1; i++) {
+          if (x >= xs[i] && x <= xs[i+1]) {
+            const t = (x - xs[i]) / (xs[i+1] - xs[i]);
+            return ys[i] + t * (ys[i+1] - ys[i]);
+          }
+        }
+      }
+      return years.map(y => interp(y) / 100);
+    }
+
+    function computeEmissions(fuel, safShare, ef, safRed) {
+      const baseline = fuel.map(f => f * ef);
+      const scenario = fuel.map((f,i) => {
+        const saf = safShare[i] * f;
+        const fossil = f - saf;
+        return fossil * ef + saf * ef * (1 - safRed);
+      });
+      const avoided = baseline.map((b,i) => b - scenario[i]);
+      return { baseline, scenario, avoided };
+    }
+
+    function updateDashboard() {
+      const baselineYear   = 2022;
+      const baselineFuel   = 38.0;   
+      const startYear      = 2025;
+      const endYear        = 2050;
+      const growth         = 0.015; 
+      const ef             = 3.16;  
+      const safRed         = 0.70;   
+
+      const selectedScenario = document.getElementById("scenarioSelect").value;
+
+      const years = [];
+      for (let y = startYear; y <= endYear; y++) years.push(y);
+
+      const fuel = projectFuel(baselineYear, baselineFuel, years, growth);
+
+      const anchorsS0 = {2025:1, 2030:3, 2035:7, 2050:20};
+      const anchorsS1 = {2025:2, 2030:6, 2035:20, 2050:70};
+
+      const safS0 = interpolateSafShare(years, anchorsS0);
+      const safS1 = interpolateSafShare(years, anchorsS1);
+
+      const safShare = (selectedScenario === "S0") ? safS0 : safS1;
+
+      const { baseline, scenario, avoided } =
+        computeEmissions(fuel, safShare, ef, safRed);
+
+      Plotly.newPlot("fuel-chart", [{
+        x: years,
+        y: fuel,
+        mode:"lines+markers",
+        name:"Total fuel (Mt)",
+        line:{color:"#1351aa"}
+      }], {
+        title:`Total fuel demand EU27 (Scenario ${selectedScenario})`,
+        xaxis:{title:"Year"},
+        yaxis:{
+          title:"Fuel (Mt)",
+          range:[30, 60] 
+        }
+      });
+
+      Plotly.newPlot("saf-share-chart", [{
+        x: years,
+        y: safShare.map(x => x*100),
+        mode:"lines+markers",
+        name:`SAF share – ${selectedScenario}`,
+        line:{color:"#0f3e82"}
+      }], {
+        title:`SAF blending trajectory (${selectedScenario})`,
+        xaxis:{title:"Year"},
+        yaxis:{
+          title:"SAF share (%)",
+          range:[0, 100]  // eje fijo
+        }
+      });
+
+      Plotly.newPlot("co2-chart", [
+        { x: years, y: baseline, name:"Baseline (0% SAF)",  line:{color:"#888"} },
+        { x: years, y: scenario, name:`CO₂ with SAF – ${selectedScenario}`, line:{color:"#1351aa"} },
+        { x: years, y: avoided,  name:"Avoided CO₂", line:{dash:"dot", color:"#0f3e82"} }
+      ], {
+        title:`CO₂ emissions and avoided CO₂ (${selectedScenario})`,
+        xaxis:{title:"Year"},
+        yaxis:{
+          title:"CO₂ (Mt)",
+          range:[0, 200] 
+        }
+      });
+    }
+
+    document.getElementById("scenarioSelect").addEventListener("change", updateDashboard);
+    updateDashboard();
+
+    let g2gData = null;
+
+    function plotG2GEmissions() {
+      const c1 = document.getElementById("g2g-co2-total-chart");
+      const c2 = document.getElementById("g2g-flights-chart");
+      const c3 = document.getElementById("g2g-co2-per-flight-chart");
+      const c4 = document.getElementById("g2g-co2-vs-flights");
+      const c5 = document.getElementById("g2g-co2perflight-ranking");
+
+      if (!g2gData || g2gData.length === 0) {
+        c1.innerHTML = "";
+        c2.innerHTML = "";
+        c3.innerHTML = "";
+        c4.innerHTML = "";
+        c5.innerHTML = "";
+        return;
+      }
+
+      const byYear = {}; 
+
+      g2gData.forEach(row => {
+        const y = Number(row.YEAR);
+        const co2 = Number(row.CO2_TONS);
+        const fl = Number(row.NB_FLIGHTS);
+        if (isNaN(y)) return;
+        if (!byYear[y]) byYear[y] = {co2:0, flights:0};
+        if (!isNaN(co2)) byYear[y].co2 += co2;
+        if (!isNaN(fl))  byYear[y].flights += fl;
+      });
+
+      const years = Object.keys(byYear).map(Number).sort((a,b)=>a-b);
+      if (years.length === 0) {
+        c1.innerHTML = "<p>No valid years were found in YEAR / CO2_TONS / NB_FLIGHTS.</p>";
+        c2.innerHTML = "";
+        c3.innerHTML = "";
+        c4.innerHTML = "";
+        c5.innerHTML = "";
+        return;
+      }
+
+      const co2Total = [];
+      const flightsTotal = [];
+      const co2PerFlight = [];
+
+      years.forEach(y => {
+        const co2 = byYear[y].co2;
+        const fl = byYear[y].flights;
+        co2Total.push(co2);
+        flightsTotal.push(fl);
+        co2PerFlight.push(fl > 0 ? co2 / fl : null);
+      });
+
+      Plotly.newPlot("g2g-co2-total-chart", [{
+        x: years,
+        y: co2Total,
+        mode:"lines+markers",
+        name:"CO₂ (ton)",
+        line:{color:"#1351aa"}
+      }], {
+        title:"Total CO₂ per year",
+        xaxis:{title:"Year"},
+        yaxis:{title:"CO₂ (ton)"}
+      });
+
+      Plotly.newPlot("g2g-flights-chart", [{
+        x: years,
+        y: flightsTotal,
+        mode:"lines+markers",
+        name:"NB_FLIGHTS",
+        line:{color:"#0f3e82"}
+      }], {
+        title:"Flights per year",
+        xaxis:{title:"Year"},
+        yaxis:{title:"Number of flights"}
+      });
+
+      Plotly.newPlot("g2g-co2-per-flight-chart", [{
+        x: years,
+        y: co2PerFlight,
+        mode:"lines+markers",
+        name:"CO₂/flight",
+        line:{color:"#1351aa"}
+      }], {
+        title:"CO₂ per flight per year",
+        xaxis:{title:"Year"},
+        yaxis:{title:"ton CO₂ / flight"}
+      });
+
+      Plotly.newPlot("g2g-co2-vs-flights", [{
+        x: flightsTotal,
+        y: co2Total,
+        text: years.map(y => String(y)),
+        mode:"markers+text",
+        textposition:"top center",
+        name:"Year",
+        marker:{size:10, color:"#1351aa", opacity:0.8}
+      }], {
+        title:"CO₂ vs Number of flights (by year)",
+        xaxis:{title:"Number of flights"},
+        yaxis:{title:"CO₂ (ton)"}
+      });
+
+      const combined = years.map((y, idx) => ({
+        year: y,
+        co2pf: co2PerFlight[idx]
+      })).filter(d => d.co2pf != null && !isNaN(d.co2pf));
+
+      combined.sort((a,b) => b.co2pf - a.co2pf); // de mayor a menor intensidad
+
+      const rankYears = combined.map(d => d.year);
+      const rankCo2pf = combined.map(d => d.co2pf);
+
+      Plotly.newPlot("g2g-co2perflight-ranking", [{
+        x: rankYears,
+        y: rankCo2pf,
+        type:"bar",
+        name:"CO₂/flight",
+        marker:{color:"#1351aa"}
+      }], {
+        title:"Ranking of years by CO₂ per flight (highest intensity first)",
+        xaxis:{title:"Year"},
+        yaxis:{title:"ton CO₂ / flight"}
+      });
+    }
+
+    document.getElementById("g2gFile").addEventListener("change", function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      Papa.parse(file, {
+        header: true,
+        dynamicTyping: true,
+        complete: function(results) {
+          g2gData = results.data;
+          plotG2GEmissions();
+        }
+      });
+    });
+  </script>
+
+</body>
+</html>
